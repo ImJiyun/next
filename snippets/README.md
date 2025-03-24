@@ -212,7 +212,7 @@ export default function SnippetEditForm({ snippet }: SnippetEditFormProps) {
 
 ### Server Actions in Next.js Client Components
 
-- Server actions cannot be defined in Client Components
+- Server actions cannot be **defined** in Client Components (Client components can import server action from other files and use it)
 
 ```tsx
 "use client";
@@ -395,3 +395,283 @@ export default async function SnippetShowPage(props: SnippetShowPageProps) {
   );
 }
 ```
+
+### Error Handling with Server Actions
+
+- a big point of forms is that they can work **without JS in the browser**
+- Right now, forms in our pages are sending info to a server acrion
+- We need to somehow communicate info from a server action back to a page
+- React-dom (no react) contains a hook called `useFormState` specifically for this (with Next.js v15, we can use `useActionState`)
+  - Because it's a hook, we cannot use it with a server component
+
+#### `createSnippet` Server Action Validation Flow
+
+1. **Initial Render (Server + Client)**
+
+   - The `SnippetCreatePage` component is rendered on the client.
+   - The `useFormState` hook initializes `formState` with `{ message: "" }`.
+   - The form is displayed with input fields for `title` and `code`.
+
+2. **User Input Submission**
+
+   - The user enters a title and code in the form fields.
+   - Upon submission, the form sends the user’s input along with `formState` to the `createSnippet` server action.
+
+3. **Validation in Server Action**
+
+   - The server action extracts `title` and `code` from `formData`.
+   - It checks if `title` is a string with at least 3 characters. If invalid, it returns `{ message: "Title must be longer" }`.
+   - It checks if `code` is a string with at least 10 characters. If invalid, it returns `{ message: "Code must be longer" }`.
+
+4. **Form State Update and Re-Render**
+
+   - If validation fails, the updated `formState` (with an error message) is sent back to the client.
+   - The component re-renders, displaying the error message inside the form.
+
+5. **Successful Submission**
+   - If validation passes, a new snippet is created in the database.
+   - The user is redirected to `/`, preventing the form from re-rendering with outdated state.
+
+```tsx
+"use client";
+
+import React from "react";
+import { useFormState } from "react-dom";
+import * as actions from "@/actions";
+
+export default function SnippetCreatePage() {
+  // in useFormState hook, first arg is server action, second arg is initial form state
+  const [formState, action] = useFormState(actions.createSnippet, {
+    message: "",
+  });
+  // formState is an object that is going to be updated and changed over tiem and communicated with the server action
+  // when SnippetCreatePage is rendered, formState is being there too
+  // when the user submits the form, the formState is going to be sent to the server action
+  // the server action is going to be able to read the formState and do something with it
+
+  // action : an updated version of server action
+  // we're going to take that action and pass it to the form instead of original server action
+  return (
+    <form action={action}>
+      <h3 className="font-bold m-3">Create a Snippet</h3>
+      <div className="flex flex-col gap-4">
+        <div className="flex gap-4">
+          <label htmlFor="title" className="w-12">
+            Title
+          </label>
+          <input
+            type="text"
+            name="title"
+            id="title"
+            className="border rounded p-2 w-full"
+          />
+        </div>
+        <div className="flex gap-4">
+          <label htmlFor="code" className="w-12">
+            Code
+          </label>
+          <textarea
+            name="code"
+            id="code"
+            className="border rounded p-2 w-full"
+          />
+        </div>
+
+        {formState.message && (
+          <div className="my-2 p-2 bg-red-200 border rounded border-red-400">
+            {formState.message}
+          </div>
+        )}
+
+        <button type="submit" className="rounded p-2 bg-blue-200">
+          Create
+        </button>
+      </div>
+    </form>
+  );
+}
+```
+
+```ts
+"use server";
+import { db } from "@/db";
+import { redirect } from "next/navigation";
+
+export async function editSnippet(id: number, code: string) {
+  await db.snippet.update({
+    where: { id },
+    data: { code },
+  });
+
+  redirect(`/snippets/${id}`);
+}
+
+export async function deleteSnippet(id: number) {
+  await db.snippet.delete({ where: { id } });
+
+  redirect("/");
+}
+
+// formState will always be the first argument
+export async function createSnippet(
+  formState: { message: string },
+  formData: FormData
+) {
+  // Check the user's inputs and make sure they are valid
+  // formData.get("") will return the type of FormDataEntryValue (bc it could be a string, file, or blob)
+  const title = formData.get("title");
+  const code = formData.get("code");
+
+  // Check if the title and code are valid
+  // if they are not valid, we're going to return updated formState object, causing compoennt to rerender
+  if (typeof title !== "string" || title.length < 3) {
+    return {
+      message: "Title must be longer",
+    };
+  }
+
+  if (typeof code !== "string" || code.length < 10) {
+    return {
+      message: "Code must be longer",
+    };
+  }
+
+  // Create a new record in the database
+  const snippet = await db.snippet.create({
+    data: {
+      title,
+      code,
+    },
+  });
+  console.log(snippet);
+
+  // Redirect the user back to the root route
+  redirect("/");
+}
+```
+
+### Error Handling in Next.js
+
+- The error might happen when trying to create a record to the database
+
+```ts
+"use server";
+import { db } from "@/db";
+import { redirect } from "next/navigation";
+
+// formState will always be the first argument
+export async function createSnippet(
+  formState: { message: string },
+  formData: FormData
+) {
+  // Check the user's inputs and make sure they are valid
+  // formData.get("") will return the type of FormDataEntryValue (bc it could be a string, file, or blob)
+  const title = formData.get("title");
+  const code = formData.get("code");
+
+  // Check if the title and code are valid
+  // if they are not valid, we're going to return updated formState object, causing compoennt to rerender
+  if (typeof title !== "string" || title.length < 3) {
+    return {
+      message: "Title must be longer",
+    };
+  }
+
+  if (typeof code !== "string" || code.length < 10) {
+    return {
+      message: "Code must be longer",
+    };
+  }
+
+  // Create a new record in the database
+  const snippet = await db.snippet.create({
+    data: {
+      title,
+      code,
+    },
+  });
+  console.log(snippet);
+
+  // Redirect the user back to the root route
+  redirect("/");
+}
+```
+
+1. option 1 : create a error.tsx
+
+- One way to handle errors is to create an error.tsx page:
+
+```tsx
+"use client"; // error.tsx must be a client component
+
+interface ErrorPageProps {
+  error: Error;
+  reset: () => void;
+}
+
+export default function ErrorPage({ error }: ErrorPageProps) {
+  return <div>{error.message}</div>;
+}
+```
+
+- Cons : we stop showing the page we were displaying before
+
+2. option 2 : use server action
+
+- Instead of throwing an error, we can return an error message from the server action so the component re-renders with the new state:
+
+```ts
+// formState will always be the first argument
+export async function createSnippet(
+  formState: { message: string },
+  formData: FormData
+) {
+  try {
+    // Check the user's inputs and make sure they are valid
+    // formData.get("") will return the type of FormDataEntryValue (bc it could be a string, file, or blob)
+    const title = formData.get("title");
+    const code = formData.get("code");
+
+    // Check if the title and code are valid
+    // if they are not valid, we're going to return updated formState object, causing compoennt to rerender
+    if (typeof title !== "string" || title.length < 3) {
+      return {
+        message: "Title must be longer",
+      };
+    }
+
+    if (typeof code !== "string" || code.length < 10) {
+      return {
+        message: "Code must be longer",
+      };
+    }
+
+    // Create a new record in the database
+    await db.snippet.create({
+      data: {
+        title,
+        code,
+      },
+    });
+  } catch (error: unknown) {
+    // If there is an error, we will catch it here
+
+    // We will update the formState object with an error message
+    if (error instanceof Error) {
+      return { message: error.message };
+    } else {
+      return {
+        message: "Something went wrong",
+      };
+    }
+  }
+
+  // Redirect the user back to the root route
+  redirect("/");
+  // we shouldn't put redirect into try / catch block
+}
+```
+
+#### redirect shouldn't be in a try/catch block
+
+In Next.js, `redirect()` is designed to immediately stop the current request and trigger a redirection by throwing an exception. Next.js handles this internally to perform the redirection properly.
